@@ -51,11 +51,15 @@
         content: |
           cluster.name: elk-lab
           node.name: elk-node-1
+          path.data: /var/lib/elasticsearch
+          path.logs: /var/log/elasticsearch
           network.host: 0.0.0.0
           http.port: 9200
           discovery.type: single-node
           xpack.security.enabled: false
           xpack.security.enrollment.enabled: false
+          xpack.security.http.ssl.enabled: false
+          xpack.security.transport.ssl.enabled: false
         owner: root
         group: elasticsearch
         mode: "0660"
@@ -71,6 +75,31 @@
         group: elasticsearch
         mode: "0660"
       notify: Restart Elasticsearch
+
+    - name: Ensure Elasticsearch directories have correct ownership
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: elasticsearch
+        group: elasticsearch
+        mode: "0755"
+        recurse: true
+      loop:
+        - /var/lib/elasticsearch
+        - /var/log/elasticsearch
+        - /usr/share/elasticsearch/logs
+        - /usr/share/elasticsearch/data
+        - /usr/share/elasticsearch/plugins
+
+    - name: Remove stale xpack SSL entries from Elasticsearch keystore
+      shell: >
+        /usr/share/elasticsearch/bin/elasticsearch-keystore remove {{ item }}
+        2>/dev/null || true
+      loop:
+        - autoconfiguration.password_hash
+        - xpack.security.http.ssl.keystore.secure_password
+        - xpack.security.transport.ssl.keystore.secure_password
+        - xpack.security.transport.ssl.truststore.secure_password
 
     - name: Enable and start Elasticsearch
       systemd:
@@ -94,6 +123,11 @@
         name: kibana
         state: present
 
+    - name: Generate Kibana encryption key
+      command: openssl rand -hex 32
+      register: kibana_encryption_key
+      changed_when: false
+
     - name: Configure Kibana
       copy:
         dest: /etc/kibana/kibana.yml
@@ -102,6 +136,7 @@
           server.host: "0.0.0.0"
           server.name: "elk-lab-kibana"
           elasticsearch.hosts: ["http://localhost:9200"]
+          xpack.encryptedSavedObjects.encryptionKey: "{{ kibana_encryption_key.stdout }}"
           logging.appenders.file.type: file
           logging.appenders.file.fileName: /var/log/kibana/kibana.log
           logging.appenders.file.layout.type: json
@@ -123,6 +158,14 @@
       apt:
         name: logstash
         state: present
+
+    - name: Create Logstash jvm.options.d directory
+      file:
+        path: /etc/logstash/jvm.options.d
+        state: directory
+        owner: root
+        group: logstash
+        mode: "0755"
 
     - name: Set Logstash JVM heap size
       copy:
@@ -154,6 +197,7 @@
               }
               geoip {
                 source => "clientip"
+                target => "geoip"
               }
             }
 
