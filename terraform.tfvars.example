@@ -1,0 +1,21 @@
+aws_region = "us-east-1"
+
+project_name  = "elk-lab"
+instance_type = "t3.large"
+
+# Set to your EC2 key pair name if you want SSH key access.
+# Example: key_name = "my-keypair"
+key_name = null
+
+# Used only when key_name is null; Terraform creates EC2 key pair from this public key.
+public_key_path = "/Users/vijay/.ssh/aws-elk-stack.pub"
+managed_key_pair_name = "aws-elk-stack"
+
+vpc_cidr           = "10.42.0.0/16"
+public_subnet_cidr = "10.42.1.0/24"
+
+# For safer access, replace with your public IP CIDR:
+# Example: ["203.0.113.10/32"]
+ssh_allowed_cidrs = ["0.0.0.0/0"]
+app_allowed_cidrs = ["0.0.0.0/0"]
+elk_allowed_cidrs = ["0.0.0.0/0"]
