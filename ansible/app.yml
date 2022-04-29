@@ -1,0 +1,114 @@
+---
+- name: Install application and Filebeat
+  hosts: app
+  become: true
+
+  vars:
+    elastic_version: "8.x"
+    elk_logstash_host: "{{ hostvars['elk-server']['ansible_host'] }}"
+
+  tasks:
+
+    # ── Prerequisites ─────────────────────────────────────────────────────────
+
+    - name: Install prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - nginx
+        state: present
+        update_cache: true
+
+    - name: Enable and start nginx
+      systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    # ── Filebeat ──────────────────────────────────────────────────────────────
+
+    - name: Add Elastic GPG key
+      apt_key:
+        url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+        state: present
+
+    - name: Add Elastic APT repository
+      apt_repository:
+        repo: "deb https://artifacts.elastic.co/packages/{{ elastic_version }}/apt stable main"
+        state: present
+        filename: elastic-8.x
+
+    - name: Update apt cache after adding repo
+      apt:
+        update_cache: true
+
+    - name: Install Filebeat
+      apt:
+        name: filebeat
+        state: present
+
+    - name: Configure Filebeat
+      copy:
+        dest: /etc/filebeat/filebeat.yml
+        content: |
+          filebeat.inputs:
+            - type: filestream
+              id: nginx-access
+              enabled: true
+              paths:
+                - /var/log/nginx/access.log
+              fields:
+                service: nginx
+                env: lab
+              fields_under_root: false
+
+            - type: filestream
+              id: nginx-error
+              enabled: true
+              paths:
+                - /var/log/nginx/error.log
+              fields:
+                service: nginx-error
+                env: lab
+              fields_under_root: false
+
+          filebeat.config.modules:
+            path: ${path.config}/modules.d/*.yml
+            reload.enabled: false
+
+          setup.template.settings:
+            index.number_of_shards: 1
+
+          output.logstash:
+            hosts: ["{{ elk_logstash_host }}:5044"]
+
+          processors:
+            - add_host_metadata:
+                when.not.contains.tags: forwarded
+            - add_cloud_metadata: ~
+
+          logging.level: info
+          logging.to_files: true
+          logging.files:
+            path: /var/log/filebeat
+            name: filebeat
+            keepfiles: 7
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Restart Filebeat
+
+    - name: Enable and start Filebeat
+      systemd:
+        name: filebeat
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart Filebeat
+      systemd:
+        name: filebeat
+        state: restarted

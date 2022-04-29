@@ -1,0 +1,193 @@
+---
+- name: Install and configure ELK stack
+  hosts: elk
+  become: true
+
+  vars:
+    elastic_version: "8.x"
+    es_heap_size: "1g"       # tune for t3.large (8GB RAM)
+    ls_heap_size: "512m"
+
+  tasks:
+
+    # ── Prerequisites ────────────────────────────────────────────────────────
+
+    - name: Install prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - openjdk-17-jdk-headless
+        state: present
+        update_cache: true
+
+    - name: Add Elastic GPG key
+      apt_key:
+        url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+        state: present
+
+    - name: Add Elastic APT repository
+      apt_repository:
+        repo: "deb https://artifacts.elastic.co/packages/{{ elastic_version }}/apt stable main"
+        state: present
+        filename: elastic-8.x
+
+    - name: Update apt cache after adding repo
+      apt:
+        update_cache: true
+
+    # ── Elasticsearch ─────────────────────────────────────────────────────────
+
+    - name: Install Elasticsearch
+      apt:
+        name: elasticsearch
+        state: present
+
+    - name: Configure Elasticsearch
+      copy:
+        dest: /etc/elasticsearch/elasticsearch.yml
+        content: |
+          cluster.name: elk-lab
+          node.name: elk-node-1
+          network.host: 0.0.0.0
+          http.port: 9200
+          discovery.type: single-node
+          xpack.security.enabled: false
+          xpack.security.enrollment.enabled: false
+        owner: root
+        group: elasticsearch
+        mode: "0660"
+      notify: Restart Elasticsearch
+
+    - name: Set Elasticsearch JVM heap size
+      copy:
+        dest: /etc/elasticsearch/jvm.options.d/heap.options
+        content: |
+          -Xms{{ es_heap_size }}
+          -Xmx{{ es_heap_size }}
+        owner: root
+        group: elasticsearch
+        mode: "0660"
+      notify: Restart Elasticsearch
+
+    - name: Enable and start Elasticsearch
+      systemd:
+        name: elasticsearch
+        enabled: true
+        state: started
+
+    - name: Wait for Elasticsearch to be ready
+      uri:
+        url: http://localhost:9200
+        status_code: 200
+      register: es_result
+      until: es_result.status == 200
+      retries: 15
+      delay: 10
+
+    # ── Kibana ────────────────────────────────────────────────────────────────
+
+    - name: Install Kibana
+      apt:
+        name: kibana
+        state: present
+
+    - name: Configure Kibana
+      copy:
+        dest: /etc/kibana/kibana.yml
+        content: |
+          server.port: 5601
+          server.host: "0.0.0.0"
+          server.name: "elk-lab-kibana"
+          elasticsearch.hosts: ["http://localhost:9200"]
+          logging.appenders.file.type: file
+          logging.appenders.file.fileName: /var/log/kibana/kibana.log
+          logging.appenders.file.layout.type: json
+          logging.root.appenders: [default, file]
+        owner: root
+        group: kibana
+        mode: "0660"
+      notify: Restart Kibana
+
+    - name: Enable and start Kibana
+      systemd:
+        name: kibana
+        enabled: true
+        state: started
+
+    # ── Logstash ──────────────────────────────────────────────────────────────
+
+    - name: Install Logstash
+      apt:
+        name: logstash
+        state: present
+
+    - name: Set Logstash JVM heap size
+      copy:
+        dest: /etc/logstash/jvm.options.d/heap.options
+        content: |
+          -Xms{{ ls_heap_size }}
+          -Xmx{{ ls_heap_size }}
+      notify: Restart Logstash
+
+    - name: Configure Logstash beats pipeline
+      copy:
+        dest: /etc/logstash/conf.d/beats.conf
+        content: |
+          input {
+            beats {
+              port => 5044
+            }
+          }
+
+          filter {
+            if [fields][service] == "nginx" {
+              grok {
+                match => {
+                  "message" => "%{COMBINEDAPACHELOG}"
+                }
+              }
+              date {
+                match => ["timestamp", "dd/MMM/yyyy:HH:mm:ss Z"]
+              }
+              geoip {
+                source => "clientip"
+              }
+            }
+
+            mutate {
+              remove_field => ["agent", "ecs"]
+            }
+          }
+
+          output {
+            elasticsearch {
+              hosts => ["http://localhost:9200"]
+              index => "%{[fields][service]}-%{+YYYY.MM.dd}"
+            }
+          }
+      notify: Restart Logstash
+
+    - name: Enable and start Logstash
+      systemd:
+        name: logstash
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart Elasticsearch
+      systemd:
+        name: elasticsearch
+        state: restarted
+
+    - name: Restart Kibana
+      systemd:
+        name: kibana
+        state: restarted
+
+    - name: Restart Logstash
+      systemd:
+        name: logstash
+        state: restarted
