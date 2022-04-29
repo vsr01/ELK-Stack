@@ -45,15 +45,15 @@ ansible all -m ping
 
 | Host | Software |
 |------|----------|
-| elk-server (3.236.195.167) | Elasticsearch 8.x, Kibana 8.x, Logstash 8.x |
-| app-server (44.204.243.77) | nginx, Filebeat 8.x |
+| elk-server (3.216.132.33) | Elasticsearch 8.x, Kibana 8.x, Logstash 8.x |
+| app-server (44.205.19.1) | nginx, Filebeat 8.x |
 
 ## Accessing services after setup
 
 | Service | URL |
 |---------|-----|
-| Kibana | http://3.236.195.167:5601 |
-| Elasticsearch | http://3.236.195.167:9200 |
+| Kibana | http://3.216.132.33:5601 |
+| Elasticsearch | http://3.216.132.33:9200 |
 
 ## Log flow
 
@@ -63,7 +63,7 @@ nginx (app) → Filebeat → Logstash :5044 → Elasticsearch → Kibana
 
 ## Kibana first steps
 
-1. Open http://3.236.195.167:5601
+3. Open http://3.216.132.33:5601
 2. Go to **Stack Management → Index Patterns**
 3. Create an index pattern: `nginx-*`
 4. Go to **Discover** to query your nginx logs
