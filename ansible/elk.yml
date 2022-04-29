@@ -5,7 +5,7 @@
 
   vars:
     elastic_version: "8.x"
-    es_heap_size: "1g"       # tune for t3.large (8GB RAM)
+    es_heap_size: "1g"    # tuned for t3.large (8GB RAM)
     ls_heap_size: "512m"
 
   tasks:
@@ -45,17 +45,36 @@
         name: elasticsearch
         state: present
 
+    # Pre-create data/log dirs with correct ownership before writing config.
+    # The installer sets /usr/share/elasticsearch owned by root, so ES cannot
+    # create subdirs at startup — we do it here instead.
+    - name: Ensure Elasticsearch directories have correct ownership
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: elasticsearch
+        group: elasticsearch
+        mode: "0755"
+      loop:
+        - /var/lib/elasticsearch
+        - /var/log/elasticsearch
+        - /usr/share/elasticsearch/logs
+        - /usr/share/elasticsearch/data
+        - /usr/share/elasticsearch/plugins
+
     - name: Configure Elasticsearch
       copy:
         dest: /etc/elasticsearch/elasticsearch.yml
         content: |
           cluster.name: elk-lab
           node.name: elk-node-1
+          # Use standard paths owned by the elasticsearch user
           path.data: /var/lib/elasticsearch
           path.logs: /var/log/elasticsearch
           network.host: 0.0.0.0
           http.port: 9200
           discovery.type: single-node
+          # Security disabled for lab use — do not expose publicly
           xpack.security.enabled: false
           xpack.security.enrollment.enabled: false
           xpack.security.http.ssl.enabled: false
@@ -76,21 +95,8 @@
         mode: "0660"
       notify: Restart Elasticsearch
 
-    - name: Ensure Elasticsearch directories have correct ownership
-      file:
-        path: "{{ item }}"
-        state: directory
-        owner: elasticsearch
-        group: elasticsearch
-        mode: "0755"
-        recurse: true
-      loop:
-        - /var/lib/elasticsearch
-        - /var/log/elasticsearch
-        - /usr/share/elasticsearch/logs
-        - /usr/share/elasticsearch/data
-        - /usr/share/elasticsearch/plugins
-
+    # The apt package seeds the keystore with xpack SSL entries that conflict
+    # with security being disabled. Remove them before starting the service.
     - name: Remove stale xpack SSL entries from Elasticsearch keystore
       shell: >
         /usr/share/elasticsearch/bin/elasticsearch-keystore remove {{ item }}
@@ -100,6 +106,7 @@
         - xpack.security.http.ssl.keystore.secure_password
         - xpack.security.transport.ssl.keystore.secure_password
         - xpack.security.transport.ssl.truststore.secure_password
+      changed_when: false
 
     - name: Enable and start Elasticsearch
       systemd:
@@ -123,10 +130,22 @@
         name: kibana
         state: present
 
-    - name: Generate Kibana encryption key
-      command: openssl rand -hex 32
-      register: kibana_encryption_key
-      changed_when: false
+    # Generate a stable encryption key on first run and persist it so that
+    # saved objects (dashboards, index patterns) survive Kibana restarts.
+    # Re-running the playbook will not overwrite an existing key file.
+    - name: Check if Kibana encryption key file exists
+      stat:
+        path: /etc/kibana/encryption_key
+      register: kibana_key_file
+
+    - name: Generate and persist Kibana encryption key
+      shell: openssl rand -hex 32 > /etc/kibana/encryption_key
+      when: not kibana_key_file.stat.exists
+
+    - name: Read Kibana encryption key
+      slurp:
+        src: /etc/kibana/encryption_key
+      register: kibana_key_raw
 
     - name: Configure Kibana
       copy:
@@ -136,7 +155,8 @@
           server.host: "0.0.0.0"
           server.name: "elk-lab-kibana"
           elasticsearch.hosts: ["http://localhost:9200"]
-          xpack.encryptedSavedObjects.encryptionKey: "{{ kibana_encryption_key.stdout }}"
+          # Required for Elastic Security app and encrypted saved objects
+          xpack.encryptedSavedObjects.encryptionKey: "{{ kibana_key_raw.content | b64decode | trim }}"
           logging.appenders.file.type: file
           logging.appenders.file.fileName: /var/log/kibana/kibana.log
           logging.appenders.file.layout.type: json
@@ -159,6 +179,7 @@
         name: logstash
         state: present
 
+    # The apt package does not create jvm.options.d — create it before writing
     - name: Create Logstash jvm.options.d directory
       file:
         path: /etc/logstash/jvm.options.d
@@ -195,6 +216,7 @@
               date {
                 match => ["timestamp", "dd/MMM/yyyy:HH:mm:ss Z"]
               }
+              # target is required in ECS v8 compatibility mode
               geoip {
                 source => "clientip"
                 target => "geoip"

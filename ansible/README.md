@@ -18,42 +18,40 @@ ansible/
 └── app.yml           # installs nginx + Filebeat
 ```
 
-## Running
+## Workflow after recreating EC2 instances
 
-**Full setup (both instances):**
+IPs change every time instances are recreated. Run this first to sync them:
+```bash
+./scripts/update-inventory.sh
+```
+
+Then run the playbooks:
 ```bash
 cd ansible
-ansible-playbook site.yml
+ansible all -m ping          # verify SSH connectivity
+ansible-playbook site.yml    # full setup
 ```
 
-**ELK instance only:**
-```bash
-ansible-playbook elk.yml
-```
+## Running individual playbooks
 
-**App instance only:**
 ```bash
-ansible-playbook app.yml
-```
-
-**Check connectivity first:**
-```bash
-ansible all -m ping
+ansible-playbook elk.yml     # ELK instance only
+ansible-playbook app.yml     # app instance only
 ```
 
 ## What gets installed
 
 | Host | Software |
 |------|----------|
-| elk-server (3.216.132.33) | Elasticsearch 8.x, Kibana 8.x, Logstash 8.x |
-| app-server (44.205.19.1) | nginx, Filebeat 8.x |
+| elk-server | Elasticsearch 8.x, Kibana 8.x, Logstash 8.x |
+| app-server | nginx, Filebeat 8.x |
 
 ## Accessing services after setup
 
 | Service | URL |
 |---------|-----|
-| Kibana | http://3.216.132.33:5601 |
-| Elasticsearch | http://3.216.132.33:9200 |
+| Kibana  | http://\<elk_public_ip\>:5601 |
+| Elasticsearch | http://\<elk_public_ip\>:9200 |
 
 ## Log flow
 
@@ -61,15 +59,74 @@ ansible all -m ping
 nginx (app) → Filebeat → Logstash :5044 → Elasticsearch → Kibana
 ```
 
-## Kibana first steps
+## Kibana setup
 
-3. Open http://3.216.132.33:5601
-2. Go to **Stack Management → Index Patterns**
-3. Create an index pattern: `nginx-*`
-4. Go to **Discover** to query your nginx logs
+1. Open `http://<elk_public_ip>:5601`
+2. Go to **Stack Management → Data Views**
+3. Click **Create data view**
+4. Set index pattern to `nginx-*` and timestamp field to `@timestamp`
+5. Save, then go to **Discover** to explore logs
+
+### Useful fields in Discover
+
+| Field | Description |
+|-------|-------------|
+| `@timestamp` | When the request hit nginx |
+| `source.address` | Client IP |
+| `http.request.method` | GET, POST, etc. |
+| `url.original` | Requested path |
+| `http.response.status_code` | 200, 404, 500, etc. |
+| `http.response.body.bytes` | Response size |
+| `user_agent.original` | Browser / client |
+
+Pin fields as columns in Discover by clicking `+` next to them in the left sidebar.
+
+## Troubleshooting
+
+**Elasticsearch fails to start (exit code 78 — cannot create logs dir)**
+The installer sets `/usr/share/elasticsearch` owned by root. The playbook
+pre-creates `data`, `logs`, and `plugins` subdirs with `elasticsearch` ownership
+before starting the service.
+
+**Elasticsearch fails to start (xpack SSL keystore conflict)**
+The apt package seeds the keystore with SSL entries that conflict when security
+is disabled. The playbook removes them automatically before starting the service.
+
+**Logstash pipeline error — geoip requires target**
+In ECS v8 compatibility mode the geoip filter requires an explicit `target` field.
+The pipeline config sets `target => "geoip"` to satisfy this.
+
+**Logstash jvm.options.d does not exist**
+The apt package does not create this directory. The playbook creates it before
+writing the heap options file.
+
+**Filebeat cannot connect to Logstash (connection refused)**
+Check that Logstash is running on the ELK instance:
+```bash
+ssh ubuntu@<elk_ip> sudo systemctl status logstash
+```
+Check Filebeat can reach Logstash:
+```bash
+ssh ubuntu@<app_ip> sudo filebeat test output
+```
+
+**`nginx-*` index pattern not found in Kibana**
+No data has arrived yet. Generate some traffic first:
+```bash
+curl http://<app_public_ip>
+```
+Then check indices exist in Elasticsearch:
+```bash
+curl http://<elk_public_ip>:9200/_cat/indices?v
+```
+
+**`_geoip_lookup_failure` tag on log entries**
+Logstash downloads the MaxMind GeoIP database in the background after startup.
+This tag appears until the download completes (usually a few minutes).
 
 ## Notes
 
-- xpack security is disabled for this lab setup — do not expose to the internet in production
-- Logstash heap is set to 512m and Elasticsearch to 1g — tuned for t3.large (8GB RAM)
-- Filebeat ships nginx access and error logs from `/var/log/nginx/`
+- xpack security is disabled — do not expose these instances publicly in production
+- Elasticsearch heap: 1g, Logstash heap: 512m — tuned for t3.large (8GB RAM)
+- The Kibana encryption key is generated once and persisted at `/etc/kibana/encryption_key`
+  so saved objects survive playbook re-runs

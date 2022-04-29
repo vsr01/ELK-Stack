@@ -5,7 +5,9 @@
 
   vars:
     elastic_version: "8.x"
-    elk_logstash_host: "{{ hostvars['elk-server']['ansible_host'] }}"
+    # Use the ELK private IP from inventory vars so this playbook works
+    # whether run standalone or as part of site.yml
+    elk_logstash_host: "{{ elk_private_ip }}"
 
   tasks:
 
@@ -30,6 +32,8 @@
 
     # ── Filebeat ──────────────────────────────────────────────────────────────
 
+    # Filebeat is an Elastic product — not in Ubuntu default repos.
+    # Must add the Elastic APT repo first.
     - name: Add Elastic GPG key
       apt_key:
         url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
